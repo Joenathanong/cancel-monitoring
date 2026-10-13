@@ -354,3 +354,8 @@ body{background:var(--bg-canvas);color:var(--ink);font-family:var(--font-sans);f
 
 /* Utilities Tailwind di AKHIR supaya kelas utilitas (hidden, md:inline-flex, !h-9, …) menang atas komponen di atas. */
 @tailwind utilities;
+
+/* Skeleton pemuatan (loading.tsx) */
+.skel{background:var(--bg-sunken);border-radius:6px;animation:skel 1.2s ease-in-out infinite}
+@keyframes skel{0%,100%{opacity:1}50%{opacity:.55}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none}}

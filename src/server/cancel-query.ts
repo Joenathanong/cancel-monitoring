@@ -1,7 +1,7 @@
 import 'server-only';
 import { prisma } from '@/lib/prisma';
 import { cancelSettingsOf, type Settings } from '@/lib/settings';
-import { classifyCancel, type CancelResult, type Review, type Stage, type Team, type Verdict } from '@/lib/cancel';
+import { classifyCancel, CUTOFF, type CancelResult, type Review, type Stage, type Team, type Verdict } from '@/lib/cancel';
 import { dayKeyWib } from '@/lib/kpi';
 
 const WIB = 7 * 3600 * 1000;
@@ -48,12 +48,31 @@ export async function cancelDashboard(f: CancelFilter, s: Settings): Promise<Can
   if (f.platform) base.platform = f.platform;
   if (f.shop) base.shopName = f.shop;
 
-  const [cancelled, quickBySql, raw, dailies, opts] = await Promise.all([
+  const cutoffCode = CUTOFF[cs.cutoff];
+  const long = { ...base, calendarHours: { gte: minSla } };
+  // Kolom yang dibutuhkan saja — tanpa ocsLogs (JSON log, paling berat).
+  const select = {
+    orderId: true, platform: true, shopName: true, area: true, orderType: true, isInstant: true, productName: true, totalQty: true,
+    orderCreatedAt: true, ocsUpdatedAt: true, detailedAt: true, detailError: true, readyAt: true, cancelledAt: true,
+    maxCodeBeforeCancel: true, lastStatusBeforeCancel: true, hasPicklist: true, picked: true, packed: true, pickFailed: true,
+    picklistNo: true, pickerId: true, packerId: true,
+    reviewStatus: true, reviewTeam: true, reviewReason: true, reviewNote: true, reviewedBy: true, reviewedAt: true,
+  } as const;
+  const [cancelled, quickBySql, notReadyBySql, shippedBySql, raw, dailies, opts] = await Promise.all([
     prisma.cancelOrder.count({ where: base }),
     prisma.cancelOrder.count({ where: { ...base, calendarHours: { lt: minSla } } }),
-    prisma.cancelOrder.findMany({ where: { ...base, calendarHours: { gte: minSla } }, orderBy: { orderCreatedAt: 'desc' }, take: 20000 }),
+    // Sudah dibuka lognya tapi tidak pernah READY (mis. UNPAID) → pasti wajar, cukup dihitung di database.
+    prisma.cancelOrder.count({ where: { ...long, detailedAt: { not: null }, readyAt: null } }),
+    // Sudah diserahkan sebelum cancel → pasti wajar.
+    prisma.cancelOrder.count({ where: { ...long, detailedAt: { not: null }, readyAt: { not: null }, maxCodeBeforeCancel: { gte: cutoffCode } } }),
+    // Hanya baris yang MUNGKIN kesalahan yang dibaca utuh lalu dinilai jam kerjanya.
+    prisma.cancelOrder.findMany({
+      where: { ...long, OR: [{ detailedAt: null }, { readyAt: { not: null }, OR: [{ maxCodeBeforeCancel: null }, { maxCodeBeforeCancel: { lt: cutoffCode } }] }] },
+      select, orderBy: { orderCreatedAt: 'desc' }, take: 20000,
+    }),
     prisma.cancelDaily.findMany({ where: { day: { gte: f.from, lte: f.to } } }),
-    prisma.cancelOrder.findMany({ where: { orderCreatedAt: { gte: a, lt: b } }, select: { area: true, platform: true, shopName: true }, distinct: ['area', 'platform', 'shopName'] }),
+    // Pilihan saringan dihitung di database (GROUP BY), tidak membaca semua baris.
+    prisma.cancelOrder.groupBy({ by: ['area', 'platform', 'shopName'], where: { orderCreatedAt: { gte: a, lt: b } } }),
   ]);
 
   // Order yang juga tercatat di Pending Kiriman → atribusi Inventory
@@ -64,7 +83,7 @@ export async function cancelDashboard(f: CancelFilter, s: Settings): Promise<Can
     for (const g of got) pend.add(g.orderId);
   }
 
-  const totals = { orders: null as number | null, cancelled, fault: 0, faultValid: 0, excluded: 0, unreviewed: 0, unchecked: 0, quick: quickBySql, shipped: 0, notReady: 0, fulfillment: 0, inventory: 0 };
+  const totals = { orders: null as number | null, cancelled, fault: 0, faultValid: 0, excluded: 0, unreviewed: 0, unchecked: 0, quick: quickBySql, shipped: shippedBySql, notReady: notReadyBySql, fulfillment: 0, inventory: 0 };
   const dayMap = new Map<string, CancelDashboard['days'][number]>();
   for (let t = a.getTime(); t < b.getTime(); t += 86400000) {
     const k = dayKeyWib(new Date(t));
@@ -84,7 +103,7 @@ export async function cancelDashboard(f: CancelFilter, s: Settings): Promise<Can
   const stages = new Map<string, Count>(), areas = new Map<string, Count>(), platforms = new Map<string, Count>(), shops = new Map<string, Count>(), hours = new Map<string, Count>(), pickers = new Map<string, Count>(), packers = new Map<string, Count>();
   const rows: CancelRow[] = [];
   for (const r of raw) {
-    const res = classifyCancel({ ...r, inPendingKiriman: pend.has(r.orderId), reviewTeam: r.reviewTeam }, cs);
+    const res = classifyCancel({ ...r, inPendingKiriman: pend.has(r.orderId), reviewTeam: r.reviewTeam ?? null }, cs);
     if (res.verdict === 'WAJAR_CEPAT') totals.quick++;
     else if (res.verdict === 'WAJAR_SUDAH_KIRIM') totals.shipped++;
     else if (res.verdict === 'WAJAR_BELUM_SIAP') totals.notReady++;
