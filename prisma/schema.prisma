@@ -1,0 +1,269 @@
+// Pending Kiriman IEG — TiDB Serverless (MySQL 8 compatible)
+// Catatan TiDB: relationMode "prisma" → setiap kolom relasi WAJIB @@index;
+// jalankan `npm run db:collation` setelah `db:push` (collation bawaan peka huruf besar-kecil).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+/// ADMIN: semua · FULFILLMENT: input pending · INVENTORY: tindak lanjut · VIEWER: lihat saja
+enum Role {
+  ADMIN
+  FULFILLMENT
+  INVENTORY
+  VIEWER
+}
+
+/// Penyelesaian di level Order ID, diturunkan dari status OCS (Find Order).
+enum Resolution {
+  OPEN
+  PROCESSED
+  CANCELLED
+}
+
+enum PoStatus {
+  BELUM
+  SUDAH
+  TIDAK_PERLU
+}
+
+enum ArrivalStatus {
+  BELUM
+  SEBAGIAN
+  SUDAH
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  username           String    @unique @db.VarChar(64)
+  name               String    @db.VarChar(120)
+  role               Role      @default(FULFILLMENT)
+  active             Boolean   @default(true)
+  passwordHash       String    @db.VarChar(255)
+  /// Lead: boleh mereview kesalahan di Monitoring Cancel (Admin selalu boleh).
+  isLead             Boolean   @default(false)
+  mustChangePassword Boolean   @default(true)
+  sessionVersion     Int       @default(1)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@map("users")
+}
+
+/// Satu baris per Order ID yang pernah dilaporkan pending.
+model PendingOrder {
+  orderId        String     @id @db.VarChar(64)
+  /// Waktu SKU pertama dari order ini diinput Fulfillment — dasar pengelompokan bulan KPI.
+  firstPendingAt DateTime
+
+  // ── Data dari OCS (Orders/FindOrder) ──
+  ocsFound       Boolean?
+  ocsStatusCode  Int?
+  ocsStatusName  String?    @db.VarChar(64)
+  /// Status mentah marketplace, mis. "SHIPPED,READY_TO_SHIP"
+  ocsRawStatus   String?    @db.VarChar(120)
+  platform       String?    @db.VarChar(32)
+  shopName       String?    @db.VarChar(64)
+  area           String?    @db.VarChar(64)
+  orderType      String?    @db.VarChar(8)
+  trackingNumber String?    @db.VarChar(120)
+  orderCreatedAt DateTime?
+  /// [{sku, bundleSku, qty, name}] dari OCS — untuk validasi & tampilan
+  ocsSkus        Json?
+
+  resolution     Resolution @default(OPEN)
+  processedAt    DateTime?
+  cancelledAt    DateTime?
+  /// true = penyelesaian diubah manual oleh Admin; sinkron OCS tidak menimpanya.
+  manualResolution Boolean  @default(false)
+  lastCheckedAt  DateTime?
+  lastCheckError String?    @db.VarChar(500)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items PendingItem[]
+
+  @@index([resolution])
+  @@index([firstPendingAt])
+  @@index([lastCheckedAt])
+  @@map("pending_orders")
+}
+
+/// Satu baris per (Order ID, SKU OCS) yang diinput Fulfillment.
+model PendingItem {
+  id      String       @id @default(cuid())
+  orderId String       @db.VarChar(64)
+  order   PendingOrder @relation(fields: [orderId], references: [orderId])
+  sku     String       @db.VarChar(120)
+  qty     Int
+  note    String?      @db.VarChar(500)
+  /// Hasil cek SKU terhadap isi order di OCS (null = belum bisa dicek)
+  skuInOrder Boolean?
+
+  inputById   String   @db.VarChar(32)
+  inputByName String   @db.VarChar(120)
+  inputAt     DateTime @default(now())
+
+  // ── Golongan barang ──
+  isPhaseOut   Boolean @default(false)
+  phaseOutInfo String? @db.VarChar(255)
+  isClearance  Boolean @default(false)
+
+  // ── Tindak lanjut Inventory ──
+  reason         String?       @db.VarChar(120)
+  reasonNote     String?       @db.Text
+  poStatus       PoStatus      @default(BELUM)
+  poNumber       String?       @db.VarChar(64)
+  poDate         DateTime?
+  poEta          DateTime?
+  poQty          Int?
+  arrivalStatus  ArrivalStatus @default(BELUM)
+  arrivedAt      DateTime?
+  arrivedQty     Int?
+  followUpById   String?       @db.VarChar(32)
+  followUpByName String?       @db.VarChar(120)
+  followUpAt     DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  logs ItemLog[]
+
+  @@unique([orderId, sku])
+  @@index([orderId])
+  @@index([sku])
+  @@index([inputAt])
+  @@map("pending_items")
+}
+
+/// Jejak setiap perubahan — supaya setiap inputan terpantau penyelesaiannya.
+model ItemLog {
+  id      String      @id @default(cuid())
+  itemId  String?     @db.VarChar(32)
+  item    PendingItem? @relation(fields: [itemId], references: [id])
+  orderId String      @db.VarChar(64)
+  at      DateTime    @default(now())
+  byName  String      @db.VarChar(120)
+  action  String      @db.VarChar(40)
+  detail  String?     @db.Text
+
+  @@index([itemId])
+  @@index([orderId])
+  @@index([at])
+  @@map("item_logs")
+}
+
+/// Salinan daftar Phase Out dari doi-monitor (/api/phase-out), sudah dipecah per SKU.
+model PhaseOutSku {
+  sku         String   @id @db.VarChar(120)
+  sourceKey   String   @db.VarChar(160)
+  name        String?  @db.VarChar(255)
+  reason      String?  @db.VarChar(160)
+  disposition String?  @db.VarChar(32)
+  replacement String?  @db.VarChar(120)
+  syncedAt    DateTime
+
+  @@map("phase_out_skus")
+}
+
+model SyncRun {
+  id         String    @id @default(cuid())
+  kind       String    @db.VarChar(16) // OCS | PHASE_OUT
+  trigger    String    @db.VarChar(16) // manual | auto | cron | input
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  ok         Boolean   @default(false)
+  checked    Int       @default(0)
+  changed    Int       @default(0)
+  message    String?   @db.Text
+
+  @@index([kind, startedAt])
+  @@map("sync_runs")
+}
+
+model AppSetting {
+  key   String @id @db.VarChar(64)
+  value String @db.Text
+
+  @@map("app_settings")
+}
+
+enum CancelReview {
+  BELUM
+  VALID
+  BUKAN_GUDANG
+}
+
+enum CancelTeam {
+  FULFILLMENT
+  INVENTORY
+}
+
+/// Order berstatus CANCELLED di OCS (OData DTO_Orders), dilengkapi log Find Order
+/// bila perlu. Klasifikasi kesalahan dihitung saat dibaca, supaya perubahan
+/// Pengaturan (x jam, jam kerja, batas) langsung berlaku mundur.
+model CancelOrder {
+  orderId       String   @id @db.VarChar(64)
+  statusCode    Int
+  platform      String?  @db.VarChar(32)
+  shopName      String?  @db.VarChar(64)
+  area          String?  @db.VarChar(64)
+  orderType     String?  @db.VarChar(8)
+  isInstant     Boolean  @default(false)
+  pickId        String?  @db.VarChar(40)
+  totalQty      Int?
+  productName   String?  @db.VarChar(255)
+  orderCreatedAt DateTime
+  ocsUpdatedAt  DateTime
+  /// jam kalender dibuat → terakhir berubah; saringan cepat sebelum membuka log
+  calendarHours Float
+
+  // ── dari log Find Order ──
+  detailedAt          DateTime?
+  detailError         String?   @db.VarChar(500)
+  readyAt             DateTime?
+  cancelledAt         DateTime?
+  maxCodeBeforeCancel Int?
+  lastStatusBeforeCancel String? @db.VarChar(64)
+  hasPicklist Boolean?
+  picked      Boolean?
+  packed      Boolean?
+  pickFailed  Boolean?
+  picklistNo  String?  @db.VarChar(40)
+  pickerId    String?  @db.VarChar(64)
+  packerId    String?  @db.VarChar(64)
+  ocsLogs     Json?
+
+  // ── review lead ──
+  reviewStatus CancelReview @default(BELUM)
+  reviewTeam   CancelTeam?
+  reviewReason String?      @db.VarChar(160)
+  reviewNote   String?      @db.Text
+  reviewedBy   String?      @db.VarChar(120)
+  reviewedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderCreatedAt])
+  @@index([ocsUpdatedAt])
+  @@index([detailedAt, calendarHours])
+  @@map("cancel_orders")
+}
+
+/// Jumlah order per hari (tanggal dibuat, WIB) untuk menghitung rasio cancel.
+model CancelDaily {
+  day         String   @id @db.VarChar(10)
+  totalOrders Int
+  cancelled   Int
+  syncedAt    DateTime
+
+  @@map("cancel_daily")
+}
