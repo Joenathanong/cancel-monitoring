@@ -15,11 +15,12 @@ export const CUTOFF = { MANIFESTED: 20030, IN_TRANSIT: 30000 } as const;
 export type Cutoff = keyof typeof CUTOFF;
 export const CUTOFF_LABEL: Record<Cutoff, string> = { MANIFESTED: 'MANIFESTED', IN_TRANSIT: 'IN TRANSIT' };
 
-export type Verdict = 'KESALAHAN' | 'WAJAR_CEPAT' | 'WAJAR_SUDAH_KIRIM' | 'BELUM_DICEK';
+export type Verdict = 'KESALAHAN' | 'WAJAR_CEPAT' | 'WAJAR_SUDAH_KIRIM' | 'WAJAR_BELUM_SIAP' | 'BELUM_DICEK';
 export const VERDICT_LABEL: Record<Verdict, string> = {
   KESALAHAN: 'Kesalahan gudang',
   WAJAR_CEPAT: 'Wajar (di bawah batas jam)',
   WAJAR_SUDAH_KIRIM: 'Wajar (sudah diserahkan)',
+  WAJAR_BELUM_SIAP: 'Wajar (belum Ready to Process / unpaid)',
   BELUM_DICEK: 'Log belum dicek',
 };
 
@@ -106,7 +107,10 @@ export function classifyCancel(i: CancelInput, s: CancelSettings): CancelResult 
     const ub = upperBoundHours(i, s);
     return { verdict: ub < sla ? 'WAJAR_CEPAT' : 'BELUM_DICEK', slaHours: sla, workHours: ub, stage: null, team: null, autoTeam: null };
   }
-  const ready = i.readyAt ?? i.orderCreatedAt;
+  // Order yang tidak pernah READY TO PROCESS (mis. masih UNPAID lalu batal) tidak pernah
+  // bisa dikerjakan gudang → bukan kesalahan gudang. Tidak ada lagi cadangan "waktu order dibuat".
+  if (!i.readyAt) return { verdict: 'WAJAR_BELUM_SIAP', slaHours: sla, workHours: 0, stage: null, team: null, autoTeam: null };
+  const ready = i.readyAt;
   const cancel = i.cancelledAt ?? i.ocsUpdatedAt;
   const wh = workHoursBetween(ready, cancel, s.shift);
   const stage = stageOf(i, s.cutoff);
@@ -128,7 +132,9 @@ export function digestFindOrder(logs: LogLite[], picklists: PicklistLite[]) {
     .filter((l) => l.at && !Number.isNaN(l.at.getTime()) && Number.isFinite(l.code))
     .sort((a, b) => a.at!.getTime() - b.at!.getTime()) as Array<{ at: Date; code: number; name: string | null }>;
   const cancel = L.find((l) => l.code === 90000 || l.code === 11100) ?? L.find((l) => l.code === 11000) ?? null;
-  const ready = L.find((l) => l.code === 20000) ?? null;
+  // Ready = log pertama yang masuk tahap proses gudang (READY_TO_PROCESS 20000 s/d sebelum IN TRANSIT).
+  // UNPAID (10000) dan IN CANCEL (11000) tidak termasuk.
+  const ready = L.find((l) => l.code >= 20000 && l.code < 30000 && (!cancel || l.at <= cancel.at)) ?? null;
   const before = L.filter((l) => !CANCEL_CODES.has(l.code) && (!cancel || l.at <= cancel.at));
   const max = before.reduce<{ code: number; name: string | null } | null>((m, l) => (!m || l.code > m.code ? { code: l.code, name: l.name } : m), null);
   const P = picklists ?? [];

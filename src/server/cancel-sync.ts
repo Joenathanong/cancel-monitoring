@@ -179,10 +179,32 @@ export async function refreshDailyCounts(days: string[], deadline = Date.now() +
   return n;
 }
 
+/**
+ * Perbaikan 13 Okt 2026: waktu READY dulu hanya diambil dari log berkode 20000. Order yang
+ * tahap prosesnya tercatat dengan kode lain (mis. 20001) jadi tampak "tidak pernah ready".
+ * Dihitung ulang dari log yang sudah tersimpan — tanpa membuka OCS lagi.
+ */
+export async function repairReadyAt(): Promise<number> {
+  type R = { orderId: string; ocsLogs: unknown };
+  const rows: R[] = await prisma.cancelOrder.findMany({
+    where: { detailedAt: { not: null }, readyAt: null, maxCodeBeforeCancel: { gte: 20000 } },
+    select: { orderId: true, ocsLogs: true },
+    take: 5000,
+  });
+  let n = 0;
+  for (const r of rows) {
+    const logs = (Array.isArray(r.ocsLogs) ? r.ocsLogs : []) as Array<{ at?: string; code?: number; status?: string }>;
+    const d = digestFindOrder(logs.map((l) => ({ CreatedAt: l.at ?? null, NewStatusCode: l.code ?? null, NewStatus: l.status ?? null })), []);
+    if (d.readyAt) { await prisma.cancelOrder.update({ where: { orderId: r.orderId }, data: { readyAt: d.readyAt } }); n++; }
+  }
+  return n;
+}
+
 /** Buka log Find Order untuk order cancel yang MUNGKIN kesalahan gudang. */
 export async function syncCancelDetail(opts: { trigger: Trigger; limit?: number; budgetMs?: number }): Promise<StepResult> {
   if (!ocsConfigured()) return { ok: false, processed: 0, changed: 0, remaining: 0, done: true, message: 'OCS_USERNAME / OCS_PASSWORD belum diisi di .env' };
   return run('CANCEL_DETAIL', opts.trigger, async () => {
+    const repaired = await repairReadyAt();
     const s = await getSettings();
     const cs = cancelSettingsOf(s);
     const deadline = Date.now() + (opts.budgetMs ?? 25000);
@@ -248,7 +270,7 @@ export async function syncCancelDetail(opts: { trigger: Trigger; limit?: number;
     const remaining = candidates.length - processed;
     return {
       ok: !fatal && failed === 0, processed, changed: faultsFound, remaining, done: remaining <= 0,
-      message: fatal ?? `Log dibuka ${processed} order (${candidates.length} perlu dicek${remaining > 0 ? `, sisa ${remaining}` : ''})${failed ? `, gagal ${failed}: ${errors.join(' | ')}` : ''}.`,
+      message: fatal ?? `Log dibuka ${processed} order (${candidates.length} perlu dicek${remaining > 0 ? `, sisa ${remaining}` : ''})${failed ? `, gagal ${failed}: ${errors.join(' | ')}` : ''}${repaired ? `; waktu ready diperbaiki untuk ${repaired} order` : ''}.`,
     };
   });
 }

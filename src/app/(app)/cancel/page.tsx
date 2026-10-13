@@ -32,7 +32,7 @@ export default async function CancelPage({ searchParams }: { searchParams: Promi
       <div>
         <h1 className="page-title">Monitoring Cancel</h1>
         <div className="text-sm text-label mt-1">
-          Kesalahan gudang = order cancel setelah ≥ <b>{h(s.cancelSlaHours)}</b> kerja (instant ≥ <b>{h(s.cancelSlaInstantHours)}</b>) sejak READY TO PROCESS dan belum <b>{CUTOFF_LABEL[s.cancelCutoff]}</b>. Jam kerja {s.workStart}–{s.workEnd} WIB. Tanggal = tanggal order dibuat.
+          Kesalahan gudang = order cancel setelah ≥ <b>{h(s.cancelSlaHours)}</b> kerja (instant ≥ <b>{h(s.cancelSlaInstantHours)}</b>) sejak READY TO PROCESS dan belum <b>{CUTOFF_LABEL[s.cancelCutoff]}</b>. Order yang tidak pernah READY TO PROCESS (mis. UNPAID) tidak dihitung. Jam kerja {s.workStart}–{s.workEnd} WIB. Tanggal = tanggal order dibuat.
         </div>
       </div>
       <Suspense fallback={null}><CancelFilters from={f.from} to={f.to} area={f.area} platform={f.platform} shop={f.shop} options={d.options} /></Suspense>
@@ -44,7 +44,7 @@ export default async function CancelPage({ searchParams }: { searchParams: Promi
         <KpiTile label="Fulfillment" value={fmtNumber(t.fulfillment)} sub="sudah dipick / belum masuk picklist" />
         <KpiTile label="Inventory" value={fmtNumber(t.inventory)} sub="tidak pernah dipick / stok pending" />
         <KpiTile label="Belum direview lead" value={fmtNumber(t.unreviewed)} tone={t.unreviewed ? 'critical' : undefined} sub={`${fmtNumber(t.faultValid)} dikonfirmasi · ${fmtNumber(t.excluded)} dikecualikan`} />
-        <KpiTile label="Cancel wajar" value={fmtNumber(t.quick + t.shipped)} tone="positive" sub={`${fmtNumber(t.quick)} di bawah batas jam · ${fmtNumber(t.shipped)} sudah diserahkan`} />
+        <KpiTile label="Cancel wajar" value={fmtNumber(t.quick + t.shipped + t.notReady)} tone="positive" sub={`${fmtNumber(t.notReady)} belum Ready to Process (unpaid) · ${fmtNumber(t.quick)} di bawah batas jam · ${fmtNumber(t.shipped)} sudah diserahkan`} />
       </div>
       {t.unchecked > 0 && (
         <div className="alert alert-critical">{fmtNumber(t.unchecked)} order cancel di rentang ini mungkin kesalahan gudang tapi lognya belum dibuka dari OCS — angka di atas belum final. Dibuka bertahap tiap sinkron, atau jalankan <code>npm run backfill:cancel</code> dari komputer.</div>

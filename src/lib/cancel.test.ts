@@ -58,6 +58,27 @@ test('klasifikasi cancel', () => {
   assert.equal(needsDetail({ ...nd, ocsUpdatedAt: W('2026-10-05T12:59:00') }, S), false);
 });
 
+test('order yang tidak pernah READY TO PROCESS bukan kesalahan gudang', () => {
+  // UNPAID 30 jam lalu dibatalkan otomatis
+  const unpaid = { ...base, readyAt: null, maxCodeBeforeCancel: 10000, hasPicklist: false, picked: false, cancelledAt: W('2026-10-06T15:00:00') };
+  const r = classifyCancel(unpaid, S);
+  assert.equal(r.verdict, 'WAJAR_BELUM_SIAP');
+  assert.equal(r.team, null);
+  const d = digestFindOrder([
+    { CreatedAt: '2026-10-05T02:00:00Z', NewStatusCode: 10000, NewStatus: 'UNPAID' },
+    { CreatedAt: '2026-10-06T02:00:00Z', NewStatusCode: 90000, NewStatus: 'CANCELLED' },
+  ], []);
+  assert.equal(d.readyAt, null);
+  assert.equal(d.maxCodeBeforeCancel, 10000);
+  // tahap proses tanpa log 20000 (mis. langsung PROCESSED 20001) tetap terbaca ready
+  const d2 = digestFindOrder([
+    { CreatedAt: '2026-10-05T02:00:00Z', NewStatusCode: 10000, NewStatus: 'UNPAID' },
+    { CreatedAt: '2026-10-05T03:00:00Z', NewStatusCode: 20001, NewStatus: 'PROCESSED' },
+    { CreatedAt: '2026-10-05T09:00:00Z', NewStatusCode: 90000, NewStatus: 'CANCELLED' },
+  ], []);
+  assert.equal(d2.readyAt?.toISOString(), '2026-10-05T03:00:00.000Z');
+});
+
 test('ringkas log Find Order', () => {
   const d = digestFindOrder(
     [

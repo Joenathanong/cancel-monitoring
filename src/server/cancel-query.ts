@@ -23,7 +23,7 @@ type Count = { key: string; label: string; n: number };
 
 export type CancelDashboard = {
   filter: CancelFilter;
-  totals: { orders: number | null; cancelled: number; fault: number; faultValid: number; excluded: number; unreviewed: number; unchecked: number; quick: number; shipped: number; fulfillment: number; inventory: number };
+  totals: { orders: number | null; cancelled: number; fault: number; faultValid: number; excluded: number; unreviewed: number; unchecked: number; quick: number; shipped: number; notReady: number; fulfillment: number; inventory: number };
   days: Array<{ day: string; orders: number | null; cancelled: number; fulfillment: number; inventory: number; excluded: number }>;
   stages: Count[]; areas: Count[]; platforms: Count[]; shops: Count[]; hours: Count[]; pickers: Count[]; packers: Count[];
   rows: CancelRow[];
@@ -64,7 +64,7 @@ export async function cancelDashboard(f: CancelFilter, s: Settings): Promise<Can
     for (const g of got) pend.add(g.orderId);
   }
 
-  const totals = { orders: null as number | null, cancelled, fault: 0, faultValid: 0, excluded: 0, unreviewed: 0, unchecked: 0, quick: quickBySql, shipped: 0, fulfillment: 0, inventory: 0 };
+  const totals = { orders: null as number | null, cancelled, fault: 0, faultValid: 0, excluded: 0, unreviewed: 0, unchecked: 0, quick: quickBySql, shipped: 0, notReady: 0, fulfillment: 0, inventory: 0 };
   const dayMap = new Map<string, CancelDashboard['days'][number]>();
   for (let t = a.getTime(); t < b.getTime(); t += 86400000) {
     const k = dayKeyWib(new Date(t));
@@ -87,6 +87,7 @@ export async function cancelDashboard(f: CancelFilter, s: Settings): Promise<Can
     const res = classifyCancel({ ...r, inPendingKiriman: pend.has(r.orderId), reviewTeam: r.reviewTeam }, cs);
     if (res.verdict === 'WAJAR_CEPAT') totals.quick++;
     else if (res.verdict === 'WAJAR_SUDAH_KIRIM') totals.shipped++;
+    else if (res.verdict === 'WAJAR_BELUM_SIAP') totals.notReady++;
     else if (res.verdict === 'BELUM_DICEK') totals.unchecked++;
     const day = dayMap.get(dayKeyWib(r.orderCreatedAt));
     if (res.verdict === 'KESALAHAN') {

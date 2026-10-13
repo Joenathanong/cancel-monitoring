@@ -6,7 +6,7 @@
  * Aman dihentikan (Ctrl+C) dan dijalankan ulang — lanjut dari posisi terakhir.
  */
 import './load-env';
-import { syncCancelList, syncCancelDetail } from '../src/server/cancel-sync';
+import { syncCancelList, syncCancelDetail, repairReadyAt } from '../src/server/cancel-sync';
 import { setSettings, setInternal } from '../src/lib/settings';
 import { prisma } from '../src/lib/prisma';
 
@@ -37,6 +37,8 @@ async function main() {
       if (r.done) break;
     }
   }
+  const fixed = await repairReadyAt();
+  if (fixed) console.log(`Waktu READY diperbaiki dari log tersimpan untuk ${fixed} order.`);
   console.log('2/2 Membuka log order yang mungkin kesalahan gudang …');
   for (let i = 1; ; i++) {
     const r = await syncCancelDetail({ trigger: 'backfill', limit: 200, budgetMs: 120000 });
